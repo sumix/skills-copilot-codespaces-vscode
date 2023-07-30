@@ -1,44 +1,54 @@
-//create web server
-var express = require('express');
-var app = express();
-var fs = require('fs');
-var bodyParser = require('body-parser');
-var urlencodedParser = bodyParser.urlencoded({ extended: true });
-var jsonParser = bodyParser.json();
-var port = 8080;
-var path = require('path');
-var MongoClient = require('mongodb').MongoClient;
-var url = "mongodb://localhost:27017/";
+// Create web server
+const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const { randomBytes } = require('crypto'); // generate random id
+const axios = require('axios');
 
-//connect to mongoDB
-MongoClient.connect(url, function(err, db) {
-  if (err) throw err;
-  console.log("Database created!");
-  db.close();
+const app = express();
+app.use(bodyParser.json());
+app.use(cors());
+
+const commentsByPostId = {};
+
+// Get all comments by post id
+app.get('/posts/:id/comments', (req, res) => {
+  res.send(commentsByPostId[req.params.id] || []);
 });
 
-//create collection
-MongoClient.connect(url, function(err, db) {
-  if (err) throw err;
-  var dbo = db.db("mydb");
-  //create collection
-  dbo.createCollection("comments", function(err, res) {
-    if (err) throw err;
-    console.log("Collection created!");
-    db.close();
+// Add a comment to a post id
+app.post('/posts/:id/comments', async (req, res) => {
+  const commentId = randomBytes(4).toString('hex'); // generate random id
+  const { content } = req.body; // get content from request body
+  const comments = commentsByPostId[req.params.id] || []; // get comments from post id
+  comments.push({ id: commentId, content, status: 'pending' }); // add new comment to comments
+  commentsByPostId[req.params.id] = comments; // update comments
+  // Send event to the event bus
+  await axios.post('http://event-bus-srv:4005/events', {
+    type: 'CommentCreated',
+    data: { id: commentId, content, postId: req.params.id, status: 'pending' },
   });
+  res.status(201).send(comments);
 });
 
-//insert data
-MongoClient.connect(url, function(err, db) {
-  if (err) throw err;
-  var dbo = db.db("mydb");
-  //create object
-  var myobj = { name: "Company Inc", address: "Highway 37" };
-  //insert object into collection
-  dbo.collection("comments").insertOne(myobj, function(err, res) {
-    if (err) throw err;
-    console.log("1 document inserted");
-    db.close();
-  });
+// Receive event from event bus
+app.post('/events', async (req, res) => {
+  console.log('Event Received:', req.body.type);
+  const { type, data } = req.body;
+  if (type === 'CommentModerated') {
+    const { id, postId, status, content } = data;
+    const comments = commentsByPostId[postId];
+    const comment = comments.find((c) => c.id === id);
+    comment.status = status;
+    // Send event to the event bus
+    await axios.post('http://event-bus-srv:4005/events', {
+      type: 'CommentUpdated',
+      data: { id, postId, status, content },
+    });
+  }
+  res.send({});
+});
+
+app.listen(4001, () => {
+  console.log('Listening on 4001');
 });
